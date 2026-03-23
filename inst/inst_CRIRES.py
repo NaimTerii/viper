@@ -41,9 +41,28 @@ ip_guess = {'s': 1.5}
 
 def Spectrum(filename='', order=None, targ=None):
 
-    order_drs, detector = divmod(order-1, 3)
-    order_drs = 7 - order_drs	# order number (CRIRES+ definition)
-    detector += 1			# detector number (1,2,3)
+    hdu = fits.open(filename, ignore_blank=True)
+    hdr = hdu[0].header
+    setting = hdr['ESO INS WLEN ID']
+    
+    if str(setting)[0] != 'K':
+        # max DRS order for ech detector    
+        det_ord_max = [int((hdu[det].columns.names[-1]).split('_')[0]) for det in (1, 2, 3)]
+        
+        ord_max = np.nanmax(det_ord_max)		# max drs order of all detectors
+        ind_det_max = det_ord_max.index(ord_max) + 1	# idex of max drs order
+    
+        order_idx, detector = divmod(order, 3)
+        detector = (detector + ind_det_max) % 3
+        if detector == 0: detector = 3
+
+        order_drs = det_ord_max[detector-1] - order_idx	# DRS order for viper order
+
+    else:
+        # for now we tread K band data separately
+        order_drs, detector = divmod(order-1, 3)
+        order_drs = 7 - order_drs	# order number (CRIRES+ definition)
+        detector += 1			# detector number (1,2,3)
     
     exptime = 0
 
@@ -129,7 +148,10 @@ def Spectrum(filename='', order=None, targ=None):
         # check if data are already blaze corrected by DRS pipeline
         # otherwise use own blaze correction generated from 1D FLAT spectra 
         # not yet tested for all settings
-        hdu = fits.open(path+'blaze_own.fits', ignore_blank=True)       
+        if str(setting)[0] == 'K':
+             hdu = fits.open(path+'blaze_own.fits', ignore_blank=True) 
+        else:
+             hdu = fits.open(path+'blaze_new.fits', ignore_blank=True)        
         blaze = hdu[setting].data["0"+str(order_drs)+"_0"+str(detector)+"_BLAZE"]        
         spec /= blaze
 
@@ -144,9 +166,26 @@ def Tpl(tplname, order=None, targ=None):
     if tplname.endswith('_tpl.fits'):
         # tpl created with viper
         
-        order_drs, detector = divmod(order-1, 3)
-        order_drs = 7 - order_drs		# order number (CRIRES+ definition)
-        detector += 1			# detector number (1,2,3)
+        hdu = fits.open(tplname, ignore_blank=True)
+        hdr = hdu[0].header
+        setting = hdr['ESO INS WLEN ID']
+    
+        if str(setting)[0] != 'K':
+            det_ord_max = [int((hdu[det].columns.names[-1]).split('_')[0]) for det in (1, 2, 3)]
+        
+            ord_max = np.nanmax(det_ord_max)		# max drs order for all detectors
+            ind_det_max = det_ord_max.index(ord_max) + 1	# max drs order
+    
+            order_idx, detector = divmod(order, 3)
+            detector = (detector + ind_det_max) % 3
+            if detector == 0: detector = 3
+
+            order_drs = det_ord_max[detector-1] - order_idx
+        
+        else:
+            order_drs, detector = divmod(order-1, 3)
+            order_drs = 7 - order_drs	# order number (CRIRES+ definition)
+            detector += 1			# detector number (1,2,3)
 
         if pycpl:
             hdr = PropertyList.load(tplname, 1)
@@ -217,6 +256,14 @@ def write_fits_cpl(wtpl_all, tpl_all, e_all, list_files, file_out):
 
     hdr.append(Property('HIERARCH ESO PRO DATANCOM2', len(list_files), 'Number of combined frames'))
 
+    setting = hdr["ESO INS WLEN ID"].value
+
+    if str(setting)[0] != 'K':
+        det_ord_max = [int(((Table.load(file_in, det)).column_names[-1]).split('_')[0]) for det in (1, 2, 3)]
+   
+        ord_max = np.nanmax(det_ord_max)		# max drs order for all detectors
+        ind_det_max = det_ord_max.index(ord_max) # max drs order
+
     for detector in (1, 2, 3):
         # data spread over 3 detectors, each having 6 orders
 
@@ -230,7 +277,12 @@ def write_fits_cpl(wtpl_all, tpl_all, e_all, list_files, file_out):
 
         for cc in cols[::3]:
             odrs = int(cc.split('_')[0])  
-            o = (7-odrs)*3 + detector
+            
+            if str(setting)[0] == 'K':
+                 o = (7-odrs)*3 + detector
+            else:
+                 o = (ord_max-odrs)*3 + (detector-ind_det_max) - 1
+            
             if o in list(tpl_all.keys()):
                 tbl["0"+str(odrs)+"_01_WL"] = wtpl_all[o]		# wavelength	
                 tbl["0"+str(odrs)+"_01_SPEC"] = tpl_all[o]		# data
@@ -294,14 +346,26 @@ def write_fits_nocpl(wtpl_all, tpl_all, e_all, list_files, file_out):
 
     hdr.set('HIERARCH ESO PRO DATANCOM2', len(list_files), 'Number of combined frames', after='ESO PRO REC2 RAW'+str(len(list_files))+' NAME')
 
+    setting = hdr['ESO INS WLEN ID']
+    if str(setting)[0] != 'K':
+        det_ord_max = [int((hdu[det].columns.names[-1]).split('_')[0]) for det in (1, 2, 3)]
+        
+        ord_max = np.nanmax(det_ord_max)		# max drs order for all detectors
+        ind_det_max = det_ord_max.index(ord_max) #+ 1	# max drs order
+
     # write the template data to the file            
     for detector in (1, 2, 3): 
         data = hdu[detector].data    
         cols = hdu[detector].columns   
 
         for cc in cols[::3]:
-            odrs = int(cc.name.split('_')[0])    
-            o = (7-odrs)*3 + detector
+            odrs = int(cc.name.split('_')[0])   
+             
+            if str(setting)[0] == 'K':
+                 o = (7-odrs)*3 + detector
+            else:
+                 o = (ord_max-odrs)*3 + (detector-ind_det_max) - 1
+                 
             if o in list(tpl_all.keys()):     
                 data["0"+str(odrs)+"_01_WL"] = wtpl_all[o]		# wavelength	
                 data["0"+str(odrs)+"_01_SPEC"] = tpl_all[o]		# data
