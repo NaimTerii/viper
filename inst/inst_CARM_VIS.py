@@ -100,17 +100,29 @@ def Tpl(tplname, order=None, targ=None):
             pixel, wavelen_k, spec_k, err_spec_k, flag_pixel, bjd, berv = Spectrum(tplname, order=order, targ=targ)
             '''SERVAL already applies barycentric correction to templates, so the line below can be removed'''
             #wavelen_k *= 1 + (berv*u.km/u.s/c).to_value('') # Apply barycentric correction
+            
+            # CubicSpline interpolation to artificially improve sampling in the template
+            wavelen = np.linspace(wavelen_k[0], wavelen_k[-1], 4*wavelen_k.size)    # Interpolate with 4 times as many points
+            spec = CubicSpline(wavelen_k, spec_k, bc_type='natural')(wavelen)   
+            wavelen = np.exp(wavelen) # Convert log knots to linear knots
         except:
-            print('Error : Barycentric correction for the selected template has failed.')
+            print('Error : Barycentric correction for the selected .fits template has failed.')
             exit()
+            
+    elif tplname.endswith('.all'):    # for PEPSI templates
+        try:
+            hdu = fits.open(tplname)
+            wavelen = hdu[1].data.field('Arg')
+            spec = hdu[1].data.field('Fun')
+            wavelen = airtovac(wavelen)    # convert the wavelength values from air to vacuum. Unlike SERVAL templates which already take this into account
+            
+        except:
+            print('Error : Barycentric correction for the selected .all template has failed.')
+            exit()
+            
     else:
-        print('\x1b[0;31;40m' +'Error: Template format is not known for the selected instrument. \nPlease select a .fits file'+ '\x1b[0m')    
+        print('\x1b[0;31;40m' +'Error: Template format is not known for the selected instrument. \nPlease select a .fits file or .all file'+ '\x1b[0m')    
         exit()
-    
-    # CubicSpline interpolation to artificially improve sampling in the template
-    wavelen = np.linspace(wavelen_k[0], wavelen_k[-1], 4*wavelen_k.size)    # Interpolate with 4 times as many points
-    spec = CubicSpline(wavelen_k, spec_k, bc_type='natural')(wavelen)   
-    wavelen = np.exp(wavelen) # Convert log knots to linear knots
     
     return wavelen, spec
 
