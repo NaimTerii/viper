@@ -20,6 +20,8 @@ from scipy.interpolate import CubicSpline
 
 # from inst.template import read_tpl   #### DO NOT NEED IF APPLY BARYCENTRIC CORRECTION IN THIS FILE?
 from inst.FTS_resample import resample, FTSfits 
+from inst.airtovac import airtovac
+import timeit
 
 oset = '20:50'    # Relative orders that are analyzed (Here we keep only the 20th to 49th available orders, ) (for CARM_VIS, the absolute orders start at 118 [low wavlengths] and end at 58 [high wavelengths])
 iset='400:3600'    # Keep the pixels between X and Y ; Do not analyze the ones outside of that range -- Chosen arbitrarily and can be changed by the user
@@ -28,7 +30,8 @@ iset='400:3600'    # Keep the pixels between X and Y ; Do not analyze the ones o
 ''' The IP is currently set to a very low number, because CARMENES usually uses SERVAL templates, and those have the spectrum 
 of the star already convoluted with the IP. But the viper code tries to do another convolution, which we do not want.
 '''
-ip_guess = {'s' : 300_000/(588_94_600*2*np.sqrt(2*np.log(2)))}    # speed of light divided by (spectrograph_resolution x factor) -- Assuming Gaussian IP, FWHM defined in speed v
+#ip_guess = {'s' : 300_000/(39_594_600*2*np.sqrt(2*np.log(2)))}    # speed of light divided by (spectrograph_resolution x factor) -- Assuming Gaussian IP, FWHM defined in speed v
+ip_guess = {'s' : 300_000/(94_600*2*np.sqrt(2*np.log(2)))}  # Regular ip_guess as it should be
 
 # Location of CARMENES Spectrograph -- Obtained from the data headers (hdr keys 'HIERARCH CAHA TEL GEOLAT' and 'HIERARCH CAHA TEL GEOLON' and 'HIERARCH CAHA TEL GEOELEV')
 location = carmenes = EarthLocation.from_geodetic(lat=37.2236*u.deg, lon=-2.54625*u.deg, height=2168.*u.m)
@@ -124,6 +127,27 @@ def Tpl(tplname, order=None, targ=None):
         print('\x1b[0;31;40m' +'Error: Template format is not known for the selected instrument. \nPlease select a .fits file or .all file'+ '\x1b[0m')    
         exit()
     
+
+    
+    
+    
+    print(f'tplname is {tplname}')
+    hdr = fits.open(str(tplname), ignore_blank=True)[0].header
+    def thing1():
+        if any(["SERVAL COADD" in key for key in  hdr]):
+            a = True
+    def thing2():
+        if any(["SERVAL COADD" in key for key in  list(hdr.keys())]):
+            a = True
+    def thing3():
+        if 'HIERARCH SERVAL COADD SN010' in hdr:
+            a = True
+    t1 = timeit.timeit(stmt = thing1, number=100)
+    t2 = timeit.timeit(stmt = thing2, number=100)
+    t3 = timeit.timeit(stmt = thing3, number=100)
+    print(f'\n.\n.\n {t1} WITH ANY REVERSE \n.\n.\n')
+    print(f'\n.\n.\n {t2} WITH ANY \n.\n.\n')
+    print(f'\n.\n.\n {t3} WITH otherthang \n.\n.\n')
     return wavelen, spec
 
 
