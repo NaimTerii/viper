@@ -137,22 +137,24 @@ class model:
     The forward model.
 
     '''
-    def __init__(self, *args, func_norm=poly, IP_hs=50, xcen=0):
+    def __init__(self, *args, func_norm=poly, IP_hs=50, xcen=0, inst='None'):
         # IP_hs: Half size of the IP (number of sampling knots).
         # xcen: Central pixel (to center polynomial for numeric reason).
 
         self.xcen = xcen
         self.S_star, self.lnwave_j, self.spec_cell_j, self.fluxes_molec, self.IP = args
         # convolving with IP will reduce the valid wavelength range
-        self.dx = self.lnwave_j[1] - self.lnwave_j[0]   # step size of the uniform sampled grid
+        self.dx = self.lnwave_j[1] - self.lnwave_j[0]   # step size of the uniform sampled grid (wavelength)
         self.IP_hs = IP_hs
-        self.vk = np.arange(-IP_hs, IP_hs+1) * self.dx * c
+        self.vk = np.arange(-IP_hs, IP_hs+1) * self.dx * c    # position of sampling knots for the IP (expressed as speed)
         self.lnwave_j_eff = self.lnwave_j[IP_hs:-IP_hs]    # valid grid
         self.func_norm = func_norm
+        self.inst = inst
         #print("sampling [km/s]:", self.dx*c)
 
     def __call__(self, pixel, rv=0, norm=[1], wave=[], ip=[], atm=[], bkg=[0], ipB=[]):
         # renaming (coeff is ok prefix below, but too verbose for par)
+        #the arguments above are the parameters (ip = ip_guess = par.ip, wave = par.wave, ...)
         coeff_norm, coeff_wave, coeff_ip, coeff_atm, coeff_bkg, coeff_ipB = norm, wave, ip, atm, bkg, ipB
 
         spec_gas = 1 * self.spec_cell_j
@@ -168,26 +170,73 @@ class model:
             spec_gas *= flux_atm
 
         # IP convolution
-        Sj_eff = np.convolve(self.IP(self.vk, *coeff_ip), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
-
-        if len(coeff_ipB):
-            coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
-            Sj_B = np.convolve(self.IP(self.vk, *coeff_ipB), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
-            Sj_A = Sj_eff
-            g = self.lnwave_j_eff - self.lnwave_j_eff[0]
-            g /= g[-1]
-            Sj_eff = (1-g)*Sj_A + g*Sj_B
+        ''' 
+        CARMENES uses the SERVAL templates which require a different convolution. The plan is to generalize this later 
+        so that the convolution is done differently if it is a SERVAL template and not just if it is a CARMENES observation.
+        '''
+        if self.inst == ('CARM_VIS' or 'CARM_NIR'):    # The star spectrum is already convolved with the IP for SERVAL templates. We assume that we can separate the convolution (written "*") as (a x b)*c = (a*c) + (b*c) (Which is wrong but close enough) 
+            #print(f'S Star {self.S_star(self.lnwave_j-rv/c)} of shape {np.shape(self.S_star(self.lnwave_j-rv/c))} ; \nIP {self.IP(self.vk, *coeff_ip)} of shape {np.shape(self.IP(self.vk, *coeff_ip))} ; \nspec_gas + coeff_bkg {(spec_gas + coeff_bkg[0])} of shape {np.shape((spec_gas + coeff_bkg[0]))} \nwith spec {spec_gas} of shape {np.shape(spec_gas)} and coeff_bkg = {coeff_bkg} and zero of shape {np.shape(coeff_bkg[0])}')
+            #print(f'The convolution gives : {np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode="valid")} of shape {np.shape(np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode="valid"))}')
+            
+            '''Right now this only works with no cell and no atmosphere (so if spec_gas has only values 1).
+            In order for this to work in the general case, I think I will have to either cut some values from self.S_star or add values to spec_gas (as many values as there are in self.IP)'''
+            spec_gas = np.append(spec_gas, np.ones(len(self.vk)-1))
+            print(f'NEW SPEC_GAS {spec_gas} of shape {np.shape(spec_gas)}')
+            #print(f'New S_star is of shape {np.shape(self.S_star(self.lnwave_j_eff-rv/c))} : {self.S_star(self.lnwave_j_eff-rv/c)}')
+            Sj_eff = self.S_star(self.lnwave_j-rv/c) * np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode='valid')
+            print(f'THING THUNGE')
+            if len(coeff_ipB):
+                coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
+                Sj_B = self.S_star(self.lnwave_j-rv/c)[self.IP_hs:-self.IP_hs] * np.convolve(self.IP(self.vk, *coeff_ipB), (spec_gas + coeff_bkg[0]), mode='valid')
+                Sj_A = Sj_eff
+                g = self.lnwave_j_eff - self.lnwave_j_eff[0]
+                g /= g[-1]
+                Sj_eff = (1-g)*Sj_A + g*Sj_B
+            print(f'Convolution done. \nSj_eff is an array of shape {np.shape(Sj_eff)} : {Sj_eff}')
+            print(f'lnwave_j is an array of shape {np.shape(self.lnwave_j)} : {self.lnwave_j} while lnwave_j_eff is an array of shape {np.shape(self.lnwave_j_eff)} : {self.lnwave_j_eff}')
+           
+            '''My makeshift solution does not work with lnwave_j_eff because now Sj_eff is bigger,
+            since its edges were supposed to be trimmed by the convolution with the IP of half-size [IP_hs].
+            If we take it out of the convolution, its edges are no longer trimmed. With my "solution", I just added more elements to spec_gas 
+            so that even after trimming, it is the same size as (non-trimmed) Sj_eff.
+            SO I WILL HAVE TO LOOK INTO THIS AGAIN WHEN I FIND A BETTER SOLUTION : RIGHT NOW I JUST TRIM Sj_eff
+            
+            Maybe I can instead not add anything to spec_gas, just trim the edges off of S_star to make the dimensions fit
+            (So instead of adding to spec_gas I just use S_star(lnwave_j_eff) for Sj_eff? instead of using S_star(lnwave_j)
+            '''
+            #print('\nmodel.py in __call__ : SOMETHING NEW BREAKS now that I have decided to trim Sj_eff : FIGURE OUT WHAT\n')
+            Sj_eff = Sj_eff[self.IP_hs:-self.IP_hs] #Trimming [IP_hs] elements on either side to match the trim from the convolution
+            
+            
+        else:
+            print('ELSE')
+            Sj_eff = np.convolve(self.IP(self.vk, *coeff_ip), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
+            
+            if len(coeff_ipB):
+                coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
+                Sj_B = np.convolve(self.IP(self.vk, *coeff_ipB), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
+                Sj_A = Sj_eff
+                g = self.lnwave_j_eff - self.lnwave_j_eff[0]
+                g /= g[-1]
+                Sj_eff = (1-g)*Sj_A + g*Sj_B
+            print(f'Convolution done. \nSj_eff is an array of shape {np.shape(Sj_eff)} : {Sj_eff}')
 
         # wavelength relation
         #    lam(x) = b0 + b1 * x + b2 * x^2
         lnwave_obs = np.log(poly(pixel-self.xcen, coeff_wave))
 
+        #print(f'lnwave_obs is an array of shape {np.shape(lnwave_obs)} : {lnwave_obs}')
+        #print(f'MODEL STOPS WoRKING AFTER MY MAKESHIFT SOLUTION RIGHT HERE -- DOES NOT SEEM TO WANT TO GO PAST THAT LINE because Sj_eff is now TOO BIG : there are [IP_hs] too many elements. (or lnwave_j_eff is too small?)')
+        #print(f'lnwave_j_eff is an array of shape {np.shape(self.lnwave_j_eff)} : {self.lnwave_j_eff}')
+        #print(f'lnwave_j is an array of shape {np.shape(self.lnwave_j)} : {self.lnwave_j}')
+        
         # sampling to pixel
         Si_eff = np.interp(lnwave_obs, self.lnwave_j_eff, Sj_eff)
-
+        
         # flux normalisation
         Si_mod = self.func_norm(pixel-self.xcen, coeff_norm) * Si_eff
         #Si_mod = self.func_norm((np.exp(lnwave_obs)-b[0]-coeff_norm[-1]), coeff_norm[:-1]) * Si_eff
+        
         return Si_mod
 
     def fit(self, pixel, spec_obs, par, sig=[], **kwargs):
