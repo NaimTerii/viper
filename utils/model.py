@@ -132,15 +132,41 @@ def pade(x, a, b):
     return y
 
 
+
+def convolution(S_star, func_IP, T_cell_atm, tpl_IP_isconv=False, IP_hs=50):
+    '''
+    Convolution with the IP as described in equation (7) of E. Koehler et al. 2025, A&A, 698, A44. 
+    However : if star spectrum is already convolved with IP (true for SERVAL templates) : we do not want to convolve it again
+    so we approximate the convolution (written "*") as (a x b)*c ~= (a*c) x (b*c) (see appendix A of E. Nagel et al. 2023, A&A, 680, A73)
+    '''
+    
+    ''' 
+    CARMENES uses the SERVAL templates which require a different convolution. The plan is to generalize this later 
+    so that the convolution is done differently if it is a SERVAL template and not just if it is a CARMENES observation.
+    '''
+    if tpl_IP_isconv != ('CARM_VIS' or 'CARM_NIR'):   #Change to if False once properly set up
+        Sj_eff = np.convolve(func_IP, S_star * T_cell_atm, mode='valid')
+        
+    
+    #Take S_star out of convolution with IP if it has already been convolved (eg. during template creation)
+    elif tpl_IP_isconv == ('CARM_VIS' or 'CARM_NIR'): #Change to if True once properly set up
+        Sj_eff = S_star[IP_hs:-IP_hs] * np.convolve(func_IP, T_cell_atm, mode='valid')
+        '''
+        the convolution np.conv(mode='valid') trims the edges of the largest array (removes as many data points as there are in the smallest array -- see numpy documentation). 
+        here it trims [len(func_IP) = IP_hs] data points on either side of T_cell_atm (which has same length as S_star) : so we trim S_star the same way to be able to multiply it with the convolution
+        '''
+        
+    return Sj_eff
+
+
 class model:
     '''
     The forward model.
 
     '''
-    def __init__(self, *args, func_norm=poly, IP_hs=50, xcen=0, inst='None'):
+    def __init__(self, *args, func_norm=poly, IP_hs=50, xcen=0, tpl_IP_isconv=False):
         # IP_hs: Half size of the IP (number of sampling knots).
         # xcen: Central pixel (to center polynomial for numeric reason).
-
         self.xcen = xcen
         self.S_star, self.lnwave_j, self.spec_cell_j, self.fluxes_molec, self.IP = args
         # convolving with IP will reduce the valid wavelength range
@@ -149,8 +175,10 @@ class model:
         self.vk = np.arange(-IP_hs, IP_hs+1) * self.dx * c    # position of sampling knots for the IP (expressed as speed)
         self.lnwave_j_eff = self.lnwave_j[IP_hs:-IP_hs]    # valid grid
         self.func_norm = func_norm
-        self.inst = inst
+        self.tpl_IP_isconv = tpl_IP_isconv
         #print("sampling [km/s]:", self.dx*c)
+        
+
 
     def __call__(self, pixel, rv=0, norm=[1], wave=[], ip=[], atm=[], bkg=[0], ipB=[]):
         # renaming (coeff is ok prefix below, but too verbose for par)
@@ -169,49 +197,53 @@ class model:
 
             spec_gas *= flux_atm
 
+
+
+
+        
+
         # IP convolution
+        
+        # IP convolution trial
+        '''
+        Defined a function convolution(S_star, func_IP, T_cell_atm, tpl_IP_isconv) so we can call it here and make the code cleaner
+        (Before this, there was a big "if else" statement with the 2 types of convolution, which is bad)
+        PROBLEM : How do I tell it to use lnwave_j_eff if tpl is convolved with IP?   -----> Do not, but instead make it use IP_hs=50 as a kwarg and trim it? should be same thing
+        '''
+        
+        Sj_eff = convolution(S_star=self.S_star(self.lnwave_j-rv/c), func_IP=self.IP(self.vk, *coeff_ip), T_cell_atm=(spec_gas + coeff_bkg[0]), tpl_IP_isconv=self.tpl_IP_isconv, IP_hs=self.IP_hs)
+        if len(coeff_ipB):
+            coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
+            Sj_B =convolution(S_star=self.S_star(self.lnwave_j-rv/c), func_IP=self.IP(self.vk, *coeff_ipB), T_cell_atm=(spec_gas + coeff_bkg[0]), tpl_IP_isconv=self.tpl_IP_isconv, IP_hs=self.IP_hs)
+            Sj_A = Sj_eff
+            g = self.lnwave_j_eff - self.lnwave_j_eff[0]
+            g /= g[-1]
+            Sj_eff = (1-g)*Sj_A + g*Sj_B
+        
         ''' 
         CARMENES uses the SERVAL templates which require a different convolution. The plan is to generalize this later 
         so that the convolution is done differently if it is a SERVAL template and not just if it is a CARMENES observation.
         '''
-        if self.inst == ('CARM_VIS' or 'CARM_NIR'):    # The star spectrum is already convolved with the IP for SERVAL templates. We assume that we can separate the convolution (written "*") as (a x b)*c = (a*c) + (b*c) (Which is wrong but close enough) 
-            #print(f'S Star {self.S_star(self.lnwave_j-rv/c)} of shape {np.shape(self.S_star(self.lnwave_j-rv/c))} ; \nIP {self.IP(self.vk, *coeff_ip)} of shape {np.shape(self.IP(self.vk, *coeff_ip))} ; \nspec_gas + coeff_bkg {(spec_gas + coeff_bkg[0])} of shape {np.shape((spec_gas + coeff_bkg[0]))} \nwith spec {spec_gas} of shape {np.shape(spec_gas)} and coeff_bkg = {coeff_bkg} and zero of shape {np.shape(coeff_bkg[0])}')
-            #print(f'The convolution gives : {np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode="valid")} of shape {np.shape(np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode="valid"))}')
-            
-            '''Right now this only works with no cell and no atmosphere (so if spec_gas has only values 1).
-            In order for this to work in the general case, I think I will have to either cut some values from self.S_star or add values to spec_gas (as many values as there are in self.IP)'''
-            spec_gas = np.append(spec_gas, np.ones(len(self.vk)-1))
-            print(f'NEW SPEC_GAS {spec_gas} of shape {np.shape(spec_gas)}')
-            #print(f'New S_star is of shape {np.shape(self.S_star(self.lnwave_j_eff-rv/c))} : {self.S_star(self.lnwave_j_eff-rv/c)}')
-            Sj_eff = self.S_star(self.lnwave_j-rv/c) * np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode='valid')
-            print(f'THING THUNGE')
+        '''
+        # if star spectrum is already convolved with IP (true for SERVAL templates) : approximate the convolution (written "*") as (a x b)*c ~= (a*c) x (b*c) (see  E. Nagel et al. 2023, A&A, 680, A73)
+        if self.tpl_IP_isconv == ('CARM_VIS' or 'CARM_NIR'): 
+            print(f'DOING THE THING WITH {self.tpl_IP_isconv} and STATEMENT {self.tpl_IP_isconv == ("CARM_VIS" or "CARM_NIR")}')
+            print('CHANGE THIS so that it checks if SERVAL template instead')
+            # the convolution np.conv(mode='valid') trims the edges of spec_gas by half of len(self.IP) on either side : so we use S_star(lnwave_j_eff) instead of S_star(lnwave_j) to trim edges of S_star by the same amount
+            Sj_eff = self.S_star(self.lnwave_j_eff-rv/c) * np.convolve(self.IP(self.vk, *coeff_ip), (spec_gas + coeff_bkg[0]), mode='valid')
+            print('DONE THE THING')
+            # if ipB is entered (=factor of IP width variation) : coeff_ipB = multiply IP width (coeff.ip) by ipB ; and use that instead of coeff_ip
             if len(coeff_ipB):
                 coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
-                Sj_B = self.S_star(self.lnwave_j-rv/c)[self.IP_hs:-self.IP_hs] * np.convolve(self.IP(self.vk, *coeff_ipB), (spec_gas + coeff_bkg[0]), mode='valid')
+                Sj_B = self.S_star(self.lnwave_j_eff-rv/c)[self.IP_hs:-self.IP_hs] * np.convolve(self.IP(self.vk, *coeff_ipB), (spec_gas + coeff_bkg[0]), mode='valid')
                 Sj_A = Sj_eff
                 g = self.lnwave_j_eff - self.lnwave_j_eff[0]
-                g /= g[-1]
+                g /= g[-1]  # normalization? since g is increasing ; g=1 for maximal separation (lnwave_j_eff[-1] - lnwave_j_eff[0])
                 Sj_eff = (1-g)*Sj_A + g*Sj_B
-            print(f'Convolution done. \nSj_eff is an array of shape {np.shape(Sj_eff)} : {Sj_eff}')
-            print(f'lnwave_j is an array of shape {np.shape(self.lnwave_j)} : {self.lnwave_j} while lnwave_j_eff is an array of shape {np.shape(self.lnwave_j_eff)} : {self.lnwave_j_eff}')
            
-            '''My makeshift solution does not work with lnwave_j_eff because now Sj_eff is bigger,
-            since its edges were supposed to be trimmed by the convolution with the IP of half-size [IP_hs].
-            If we take it out of the convolution, its edges are no longer trimmed. With my "solution", I just added more elements to spec_gas 
-            so that even after trimming, it is the same size as (non-trimmed) Sj_eff.
-            SO I WILL HAVE TO LOOK INTO THIS AGAIN WHEN I FIND A BETTER SOLUTION : RIGHT NOW I JUST TRIM Sj_eff
-            
-            Maybe I can instead not add anything to spec_gas, just trim the edges off of S_star to make the dimensions fit
-            (So instead of adding to spec_gas I just use S_star(lnwave_j_eff) for Sj_eff? instead of using S_star(lnwave_j)
-            '''
-            #print('\nmodel.py in __call__ : SOMETHING NEW BREAKS now that I have decided to trim Sj_eff : FIGURE OUT WHAT\n')
-            Sj_eff = Sj_eff[self.IP_hs:-self.IP_hs] #Trimming [IP_hs] elements on either side to match the trim from the convolution
-            
-            
-        else:
-            print('ELSE')
+        else:   
+            # regular convolution as described in E. Koehler et al. 2025, A&A, 698, A44
             Sj_eff = np.convolve(self.IP(self.vk, *coeff_ip), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
-            
             if len(coeff_ipB):
                 coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
                 Sj_B = np.convolve(self.IP(self.vk, *coeff_ipB), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
@@ -219,24 +251,18 @@ class model:
                 g = self.lnwave_j_eff - self.lnwave_j_eff[0]
                 g /= g[-1]
                 Sj_eff = (1-g)*Sj_A + g*Sj_B
-            print(f'Convolution done. \nSj_eff is an array of shape {np.shape(Sj_eff)} : {Sj_eff}')
+            '''
 
         # wavelength relation
         #    lam(x) = b0 + b1 * x + b2 * x^2
         lnwave_obs = np.log(poly(pixel-self.xcen, coeff_wave))
 
-        #print(f'lnwave_obs is an array of shape {np.shape(lnwave_obs)} : {lnwave_obs}')
-        #print(f'MODEL STOPS WoRKING AFTER MY MAKESHIFT SOLUTION RIGHT HERE -- DOES NOT SEEM TO WANT TO GO PAST THAT LINE because Sj_eff is now TOO BIG : there are [IP_hs] too many elements. (or lnwave_j_eff is too small?)')
-        #print(f'lnwave_j_eff is an array of shape {np.shape(self.lnwave_j_eff)} : {self.lnwave_j_eff}')
-        #print(f'lnwave_j is an array of shape {np.shape(self.lnwave_j)} : {self.lnwave_j}')
-        
         # sampling to pixel
         Si_eff = np.interp(lnwave_obs, self.lnwave_j_eff, Sj_eff)
         
         # flux normalisation
         Si_mod = self.func_norm(pixel-self.xcen, coeff_norm) * Si_eff
         #Si_mod = self.func_norm((np.exp(lnwave_obs)-b[0]-coeff_norm[-1]), coeff_norm[:-1]) * Si_eff
-        
         return Si_mod
 
     def fit(self, pixel, spec_obs, par, sig=[], **kwargs):
@@ -247,7 +273,8 @@ class model:
 
         S_model = lambda x, *params: self(x, **(par + dict(zip(varykeys, params))))
         #S_model(pixel, *varyvals)
-
+        from utils.pause import pause
+        #pause()
         params, e_params = curve_fit(S_model, pixel, spec_obs, p0=varyvals, sigma=sig, absolute_sigma=False, epsfcn=1e-12)
 
         pnew = par + dict(zip(varykeys, params))
